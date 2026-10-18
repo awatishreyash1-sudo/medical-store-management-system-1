@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 <?php
 session_start();
 
@@ -7,75 +7,121 @@ if (!isset($_SESSION['name']) || !isset($_SESSION['role'])) {
     exit();
 }
 
-$conn = new mysqli('localhost', 'root', '', 'medical_shop');
+$conn = new mysqli("localhost", "root", "", "medical_shop");
+
 if ($conn->connect_error) {
-    die("Connection failed: " . $conn->connect_error);
+    die("Database connection failed.");
 }
+
+$conn->set_charset("utf8mb4");
 
 $current_name = $_SESSION['name'];
 $current_role = $_SESSION['role'];
 $message = "";
+$success = false;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
-    $new_name = $conn->real_escape_string($_POST['new_name']);
-    $new_password = $conn->real_escape_string($_POST['new_password']);
-    $confirm_password = $conn->real_escape_string($_POST['confirm_password']);
+    $new_name = trim($_POST['new_name'] ?? '');
+    $new_password = $_POST['new_password'] ?? '';
+    $confirm_password = $_POST['confirm_password'] ?? '';
 
-    // Admin target user select karu shakto
-    if ($current_role === 'admin') {
-        $target_user = $conn->real_escape_string($_POST['target_user']);
+    $target_user = ($current_role === 'admin')
+        ? trim($_POST['target_user'] ?? '')
+        : $current_name;
+
+    if ($new_name === '' || $new_password === '' || $confirm_password === '') {
+        $message = "Please fill in all required fields.";
+
+    } elseif ($new_password !== $confirm_password) {
+        $message = "New password and confirm password do not match.";
+
     } else {
-        $target_user = $current_name;
-    }
 
-    // ================= ADMIN LOGIC =================
-    if ($current_role === 'admin') {
+        $conn->begin_transaction();
 
-        if ($new_password === $confirm_password) {
+        try {
+            // Verify target user exists
+            $stmt = $conn->prepare(
+                "SELECT name FROM users WHERE name = ?"
+            );
+            $stmt->bind_param("s", $target_user);
+            $stmt->execute();
+            $result = $stmt->get_result();
 
-            $update_users = "UPDATE users SET name='$new_name', password='$new_password' WHERE name='$target_user'";
-            if ($conn->query($update_users)) {
+            if ($result->num_rows === 0) {
+                throw new Exception("Target user was not found.");
+            }
 
-                $conn->query("UPDATE salesman SET name='$new_name', password='$new_password' WHERE name='$target_user'");
+            $stmt->close();
 
-                if ($target_user == $current_name) {
-                    $_SESSION['name'] = $new_name;
+            // Salesman must verify current password
+            if ($current_role !== 'admin') {
+
+                $current_password = $_POST['current_password'] ?? '';
+
+                $stmt = $conn->prepare(
+                    "SELECT id FROM users
+                     WHERE name = ? AND password = ?"
+                );
+                $stmt->bind_param(
+                    "ss",
+                    $current_name,
+                    $current_password
+                );
+                $stmt->execute();
+                $result = $stmt->get_result();
+
+                if ($result->num_rows === 0) {
+                    throw new Exception("Current password is incorrect.");
                 }
 
-                $message = "Password updated successfully by Admin!";
-            } else {
-                $message = "Error updating: " . $conn->error;
+                $stmt->close();
             }
 
-        } else {
-            $message = "New password and confirm password do not match.";
-        }
-    }
+            // Update user credentials
+            $stmt = $conn->prepare(
+                "UPDATE users SET name = ?, password = ?
+                 WHERE name = ?"
+            );
+            $stmt->bind_param(
+                "sss",
+                $new_name,
+                $new_password,
+                $target_user
+            );
+            $stmt->execute();
+            $stmt->close();
 
-    // ================= SALESMAN LOGIC =================
-    else {
+            // Update matching salesman record, if present
+            $stmt = $conn->prepare(
+                "UPDATE salesman SET name = ?, password = ?
+                 WHERE name = ?"
+            );
+            $stmt->bind_param(
+                "sss",
+                $new_name,
+                $new_password,
+                $target_user
+            );
+            $stmt->execute();
+            $stmt->close();
 
-        $current_password = $conn->real_escape_string($_POST['current_password']);
+            $conn->commit();
 
-        $check = "SELECT * FROM users WHERE name='$current_name' AND password='$current_password'";
-        $result = $conn->query($check);
-
-        if ($result && $result->num_rows > 0) {
-
-            if ($new_password === $confirm_password) {
-
-                $conn->query("UPDATE users SET name='$new_name', password='$new_password' WHERE name='$current_name'");
-                $conn->query("UPDATE salesman SET name='$new_name', password='$new_password' WHERE name='$current_name'");
-
+            if (
+                $current_role !== 'admin' ||
+                $target_user === $current_name
+            ) {
                 $_SESSION['name'] = $new_name;
-                $message = "Password updated successfully!";
-            } else {
-                $message = "New password and confirm password do not match.";
             }
 
-        } else {
-            $message = "Current password is incorrect.";
+            $message = "Credentials updated successfully!";
+            $success = true;
+
+        } catch (Exception $e) {
+            $conn->rollback();
+            $message = $e->getMessage();
         }
     }
 }
@@ -84,333 +130,190 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
     <title>Change Username and Password</title>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Eczar">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
+
+    <link rel="stylesheet"
+          href="https://fonts.googleapis.com/css?family=Eczar">
+
+    <link rel="stylesheet"
+          href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
 
     <style>
+        * {
+            box-sizing: border-box;
+        }
+
         body {
             font-family: "Eczar", sans-serif;
             background: linear-gradient(135deg, #dfe9f3, #ffffff);
             display: flex;
             justify-content: center;
             align-items: center;
-            height: 100vh;
+            min-height: 100vh;
             margin: 0;
+            padding: 20px;
         }
+
         .form-container {
-            background: #ffffff;
+            background: #fff;
             padding: 30px;
             border-radius: 12px;
-            width: 380px;
-            box-shadow: 0 8px 20px rgba(0,0,0,0.1);
+            width: 100%;
+            max-width: 400px;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.1);
         }
-        .form-container h2 {
+
+        h2 {
             text-align: center;
             margin-bottom: 25px;
             color: #333;
         }
-        .form-container input {
-            width: 85%;
-            padding: 10px 40px 10px 15px;
-            margin: 10px 0;
-            border-radius: 8px;
-            border: 1px solid #ccc;
-        }
+
         .form-group {
             position: relative;
+            margin-bottom: 15px;
         }
+
+        .form-group input {
+            width: 100%;
+            padding: 12px 40px 12px 14px;
+            border-radius: 8px;
+            border: 1px solid #ccc;
+            font-size: 15px;
+        }
+
         .form-group i {
             position: absolute;
-            right: 12px;
+            right: 14px;
             top: 50%;
             transform: translateY(-50%);
-            color: #999;
+            color: #777;
         }
-        .form-container button {
+
+        button {
             width: 100%;
-            padding: 10px;
-            margin: 12px 0;
+            padding: 11px;
+            margin-top: 10px;
             border: none;
             border-radius: 8px;
-            background-color: #007bff;
+            background: #007bff;
             color: white;
             font-size: 16px;
+            cursor: pointer;
         }
-        .form-container button:hover {
-            background-color: #0056b3;
+
+        button:hover {
+            background: #0056b3;
         }
+
         .back-button {
-            background-color: #6c757d !important;
+            background: #6c757d;
         }
+
         .back-button:hover {
-            background-color: #5a6268 !important;
+            background: #5a6268;
         }
-        .message { text-align: center; color: green; }
-        .error { text-align: center; color: red; }
+
+        .message {
+            text-align: center;
+            color: green;
+        }
+
+        .error {
+            text-align: center;
+            color: red;
+        }
     </style>
 </head>
+
 <body>
 
 <div class="form-container">
-    <h2><i class="bi bi-shield-lock-fill text-primary"></i> Change Credentials</h2>
 
-    <?php if (!empty($message)) : ?>
-        <p class="<?= strpos($message, 'successfully') !== false ? 'message' : 'error' ?>">
-            <?= $message ?>
+    <h2>
+        <i class="bi bi-shield-lock-fill"></i>
+        Change Credentials
+    </h2>
+
+    <?php if ($message !== ''): ?>
+        <p class="<?= $success ? 'message' : 'error' ?>">
+            <?= htmlspecialchars($message, ENT_QUOTES, 'UTF-8') ?>
         </p>
     <?php endif; ?>
 
     <form method="POST">
 
-        <?php if($_SESSION['role'] == 'admin'): ?>
+        <?php if ($current_role === 'admin'): ?>
             <div class="form-group">
-                <input type="text" name="target_user" placeholder="Enter Username (Admin or Salesman)" required>
+                <input
+                    type="text"
+                    name="target_user"
+                    placeholder="Existing Username"
+                    required
+                >
                 <i class="bi bi-person-fill"></i>
             </div>
         <?php endif; ?>
 
         <div class="form-group">
-            <input type="text" name="new_name" placeholder="New Username" required>
+            <input
+                type="text"
+                name="new_name"
+                placeholder="New Username"
+                required
+            >
             <i class="bi bi-person-fill"></i>
         </div>
 
-        <?php if($_SESSION['role'] != 'admin'): ?>
+        <?php if ($current_role !== 'admin'): ?>
             <div class="form-group">
-                <input type="password" name="current_password" placeholder="Current Password" required>
+                <input
+                    type="password"
+                    name="current_password"
+                    placeholder="Current Password"
+                    required
+                >
                 <i class="bi bi-lock-fill"></i>
             </div>
         <?php endif; ?>
 
         <div class="form-group">
-            <input type="password" name="new_password" placeholder="New Password" required>
+            <input
+                type="password"
+                name="new_password"
+                placeholder="New Password"
+                required
+            >
             <i class="bi bi-shield-lock"></i>
         </div>
 
         <div class="form-group">
-            <input type="password" name="confirm_password" placeholder="Confirm New Password" required>
+            <input
+                type="password"
+                name="confirm_password"
+                placeholder="Confirm New Password"
+                required
+            >
             <i class="bi bi-check-circle-fill"></i>
         </div>
 
         <button type="submit">
-            <i class="bi bi-arrow-repeat"></i> Update
+            <i class="bi bi-arrow-repeat"></i>
+            Update Credentials
         </button>
+
     </form>
 
     <form action="index.php" method="get">
         <button type="submit" class="back-button">
-            <i class="bi bi-arrow-left-circle-fill"></i> Back
+            <i class="bi bi-arrow-left-circle-fill"></i>
+            Back
         </button>
     </form>
 
 </div>
+
 </body>
-=======
-<?php
-session_start();
-
-if (!isset($_SESSION['name']) || !isset($_SESSION['role'])) {
-    header("Location: login.php");
-    exit();
-}
-
-$conn = new mysqli('localhost', 'root', '', 'medical_shop');
-if ($conn->connect_error) {
-    die("Connection failed: " . $conn->connect_error);
-}
-
-$current_name = $_SESSION['name'];
-$current_role = $_SESSION['role'];
-$message = "";
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-
-    $new_name = $conn->real_escape_string($_POST['new_name']);
-    $new_password = $conn->real_escape_string($_POST['new_password']);
-    $confirm_password = $conn->real_escape_string($_POST['confirm_password']);
-
-    // Admin target user select karu shakto
-    if ($current_role === 'admin') {
-        $target_user = $conn->real_escape_string($_POST['target_user']);
-    } else {
-        $target_user = $current_name;
-    }
-
-    // ================= ADMIN LOGIC =================
-    if ($current_role === 'admin') {
-
-        if ($new_password === $confirm_password) {
-
-            $update_users = "UPDATE users SET name='$new_name', password='$new_password' WHERE name='$target_user'";
-            if ($conn->query($update_users)) {
-
-                $conn->query("UPDATE salesman SET name='$new_name', password='$new_password' WHERE name='$target_user'");
-
-                if ($target_user == $current_name) {
-                    $_SESSION['name'] = $new_name;
-                }
-
-                $message = "Password updated successfully by Admin!";
-            } else {
-                $message = "Error updating: " . $conn->error;
-            }
-
-        } else {
-            $message = "New password and confirm password do not match.";
-        }
-    }
-
-    // ================= SALESMAN LOGIC =================
-    else {
-
-        $current_password = $conn->real_escape_string($_POST['current_password']);
-
-        $check = "SELECT * FROM users WHERE name='$current_name' AND password='$current_password'";
-        $result = $conn->query($check);
-
-        if ($result && $result->num_rows > 0) {
-
-            if ($new_password === $confirm_password) {
-
-                $conn->query("UPDATE users SET name='$new_name', password='$new_password' WHERE name='$current_name'");
-                $conn->query("UPDATE salesman SET name='$new_name', password='$new_password' WHERE name='$current_name'");
-
-                $_SESSION['name'] = $new_name;
-                $message = "Password updated successfully!";
-            } else {
-                $message = "New password and confirm password do not match.";
-            }
-
-        } else {
-            $message = "Current password is incorrect.";
-        }
-    }
-}
-?>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Change Username and Password</title>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Eczar">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
-
-    <style>
-        body {
-            font-family: "Eczar", sans-serif;
-            background: linear-gradient(135deg, #dfe9f3, #ffffff);
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-        }
-        .form-container {
-            background: #ffffff;
-            padding: 30px;
-            border-radius: 12px;
-            width: 380px;
-            box-shadow: 0 8px 20px rgba(0,0,0,0.1);
-        }
-        .form-container h2 {
-            text-align: center;
-            margin-bottom: 25px;
-            color: #333;
-        }
-        .form-container input {
-            width: 85%;
-            padding: 10px 40px 10px 15px;
-            margin: 10px 0;
-            border-radius: 8px;
-            border: 1px solid #ccc;
-        }
-        .form-group {
-            position: relative;
-        }
-        .form-group i {
-            position: absolute;
-            right: 12px;
-            top: 50%;
-            transform: translateY(-50%);
-            color: #999;
-        }
-        .form-container button {
-            width: 100%;
-            padding: 10px;
-            margin: 12px 0;
-            border: none;
-            border-radius: 8px;
-            background-color: #007bff;
-            color: white;
-            font-size: 16px;
-        }
-        .form-container button:hover {
-            background-color: #0056b3;
-        }
-        .back-button {
-            background-color: #6c757d !important;
-        }
-        .back-button:hover {
-            background-color: #5a6268 !important;
-        }
-        .message { text-align: center; color: green; }
-        .error { text-align: center; color: red; }
-    </style>
-</head>
-<body>
-
-<div class="form-container">
-    <h2><i class="bi bi-shield-lock-fill text-primary"></i> Change Credentials</h2>
-
-    <?php if (!empty($message)) : ?>
-        <p class="<?= strpos($message, 'successfully') !== false ? 'message' : 'error' ?>">
-            <?= $message ?>
-        </p>
-    <?php endif; ?>
-
-    <form method="POST">
-
-        <?php if($_SESSION['role'] == 'admin'): ?>
-            <div class="form-group">
-                <input type="text" name="target_user" placeholder="Enter Username (Admin or Salesman)" required>
-                <i class="bi bi-person-fill"></i>
-            </div>
-        <?php endif; ?>
-
-        <div class="form-group">
-            <input type="text" name="new_name" placeholder="New Username" required>
-            <i class="bi bi-person-fill"></i>
-        </div>
-
-        <?php if($_SESSION['role'] != 'admin'): ?>
-            <div class="form-group">
-                <input type="password" name="current_password" placeholder="Current Password" required>
-                <i class="bi bi-lock-fill"></i>
-            </div>
-        <?php endif; ?>
-
-        <div class="form-group">
-            <input type="password" name="new_password" placeholder="New Password" required>
-            <i class="bi bi-shield-lock"></i>
-        </div>
-
-        <div class="form-group">
-            <input type="password" name="confirm_password" placeholder="Confirm New Password" required>
-            <i class="bi bi-check-circle-fill"></i>
-        </div>
-
-        <button type="submit">
-            <i class="bi bi-arrow-repeat"></i> Update
-        </button>
-    </form>
-
-    <form action="index.php" method="get">
-        <button type="submit" class="back-button">
-            <i class="bi bi-arrow-left-circle-fill"></i> Back
-        </button>
-    </form>
-
-</div>
-</body>
->>>>>>> b7c4f8c090d039df274d0df3f0007f15341c6d9f
 </html>
